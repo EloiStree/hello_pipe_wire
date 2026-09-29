@@ -10,11 +10,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = core.get_registry()?;
 
     println!("Connected to PipeWire.");
-    println!("Looking for Steam Remote Play / World of Warcraft streams...\n");
+    println!("Monitoring PipeWire for Steam Remote Play streams...\n");
 
-    let done = Rc::new(Cell::new(false));
-    let done_clone = done.clone();
-    let loop_clone = mainloop.clone();
+    let initial_scan_complete = Rc::new(Cell::new(false));
+    let initial_scan_complete_clone = initial_scan_complete.clone();
 
     // IMPORTANT: install the registry listener BEFORE sync().
     let _registry_listener = registry
@@ -24,18 +23,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
 
-            // Print the interesting properties of every object.
+            // These properties identify the application and describe the stream.
             let interesting = [
                 "node.name",
                 "node.description",
                 "media.name",
                 "media.class",
                 "media.role",
+                "media.type",
+                "media.category",
                 "application.name",
                 "application.id",
                 "application.process.id",
                 "application.process.binary",
                 "application.process.user",
+                "node.state",
+                "node.latency",
+                "node.rate",
+                "audio.format",
+                "audio.rate",
+                "audio.channels",
+                "video.format",
+                "video.width",
+                "video.height",
+                "video.framerate",
                 "pipewire.access",
                 "pipewire.access.portal.app_id",
                 "pipewire.access.portal.app_path",
@@ -61,6 +72,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
 
+            // Build a searchable string from all properties we care about.
+            let searchable = interesting
+                .iter()
+                .filter_map(|key| props.get(key))
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase();
+
+            let remote_play = searchable.contains("remote play")
+                || searchable.contains("steam remote")
+                || searchable.contains("steam streaming")
+                || searchable.contains("steam")
+                    && searchable.contains("stream");
+
+            if !remote_play {
+                return;
+            }
+
             println!("==================================================");
             println!("PipeWire object id={}", global.id);
             println!("type={} version={}", global.type_, global.version);
@@ -71,62 +100,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Build a searchable string from all properties we care about.
-            let searchable = interesting
-                .iter()
-                .filter_map(|key| props.get(key))
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_ascii_lowercase();
+            println!();
+            println!("  >>> POSSIBLE STEAM REMOTE PLAY STREAM <<<");
+            println!("  reason: Steam/Remote Play related property");
 
-            let remote_play =
-                searchable.contains("remote play")
-                || searchable.contains("steam remote")
-                || searchable.contains("steam streaming")
-                || searchable.contains("steam")
-                    && searchable.contains("stream");
-
-            let world_of_warcraft =
-                searchable.contains("world of warcraft")
-                || searchable.contains("worldofwarcraft")
-                || searchable.contains("wow.exe")
-                || searchable.contains("wow");
-
-            if remote_play || world_of_warcraft {
-                println!();
-                println!("  >>> POSSIBLE REMOTE PLAY / WOW STREAM <<<");
-
-                if remote_play {
-                    println!("  reason: Steam/Remote Play related property");
-                }
-
-                if world_of_warcraft {
-                    println!("  reason: World of Warcraft related property");
-                }
-
-                println!();
-            }
+            println!();
         })
         .register();
 
-    // Synchronize AFTER installing the registry listener.
+    // Synchronize AFTER installing the registry listener, then keep monitoring
+    // so streams created after startup are also reported.
     let pending = core.sync(0)?;
 
     let _core_listener = core
         .add_listener_local()
         .done(move |id, seq| {
             if id == pw::core::PW_ID_CORE && seq == pending {
-                done_clone.set(true);
-                loop_clone.quit();
+                initial_scan_complete_clone.set(true);
+                println!("\nInitial PipeWire registry scan complete. Continuing to monitor...\n");
             }
         })
         .register();
 
-    while !done.get() {
-        mainloop.run();
-    }
-
-    println!("\nInitial PipeWire registry scan complete.");
+    mainloop.run();
 
     Ok(())
 }
